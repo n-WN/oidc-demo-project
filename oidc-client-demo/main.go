@@ -27,12 +27,14 @@ type UserInfo struct {
 	Picture string `json:"picture,omitempty"`
 }
 
+// 全局变量，用于存储 OAuth2 配置和 ID Token 验证器。
+// 这些变量在 main 函数中初始化，确保它们在整个应用中可用。
 var (
 	// --- 连接到我们自己 OP 的配置 ---
 	clientID     = "my-client-app"
 	clientSecret = "my-client-secret"
 	redirectURL  = "http://127.0.0.1:8080/auth/callback"
-	
+
 	// 全局变量，在 main 函数中初始化
 	oauth2Config    *oauth2.Config
 	idTokenVerifier *oidc.IDTokenVerifier
@@ -54,7 +56,8 @@ func main() {
 		RedirectURL:  redirectURL,
 		Endpoint:     provider.Endpoint(),
 		// 向 Provider 请求的权限范围 (scopes)。"openid" 是必须的。
-		Scopes:       []string{oidc.ScopeOpenID, "profile", "email"},
+		// 如果没有这个 scope, Provider 不会返回 ID Token, 也就是纯 OAuth2 流程
+		Scopes: []string{oidc.ScopeOpenID, "profile", "email"},
 	}
 
 	// 3. 创建 ID 令牌验证器
@@ -91,7 +94,7 @@ func handleHome(w http.ResponseWriter, r *http.Request) {
 	var userInfo UserInfo
 	data, _ := base64.StdEncoding.DecodeString(cookie.Value)
 	json.Unmarshal(data, &userInfo)
-	
+
 	var pictureHTML string
 	if userInfo.Picture != "" {
 		pictureHTML = fmt.Sprintf(`<img src="%s" alt="Profile Picture" style="width:100px; border-radius: 50%%; margin-top: 10px;">`, html.EscapeString(userInfo.Picture))
@@ -110,29 +113,44 @@ func handleHome(w http.ResponseWriter, r *http.Request) {
 
 // handleLogin 启动 OIDC 登录流程。
 func handleLogin(w http.ResponseWriter, r *http.Request) {
+	// w 不是别名，而是：
+	// - 参数名称/参数标识符
+	// - 接收传入的 http.ResponseWriter 对象的变量名
+	// - 在函数内部用来引用这个对象的名字
+
 	// 1. 生成一个随机的 state 字符串，用于防止 CSRF 攻击。
 	state, err := generateRandomString(32)
 	if err != nil {
 		http.Error(w, "生成 state 失败", http.StatusInternalServerError)
 		return
 	}
-	
+
 	// 2. 将 state 存入一个有时效性的 Cookie。
 	http.SetCookie(w, &http.Cookie{
-		Name:     "oauth-state",
-		Value:    state,
-		Path:     "/",
+		Name:  "oauth-state",
+		Value: state,
+		Path:  "/",
+		// 设置 Cookie 的有效期为 10 分钟
 		MaxAge:   int(10 * time.Minute.Seconds()),
 		HttpOnly: true,
 	})
 
 	// 3. 将用户重定向到 OIDC Provider 的授权页面。
-	http.Redirect(w, r, oauth2Config.AuthCodeURL(state), http.StatusFound)
+	target := oauth2Config.AuthCodeURL(state)
+	fmt.Printf("重定向用户到 OIDC Provider 的授权页面: %s\n", target)
+	http.Redirect(w, r, target, http.StatusFound)
 }
 
 // handleCallback 是 OIDC 流程中的回调地址。
 func handleCallback(w http.ResponseWriter, r *http.Request) {
-	ctx := context.Background()
+	// 创建自定义 HTTP 客户端，用于调试网络请求
+	debugClient := &http.Client{
+		Transport: NewDebugTransport(),
+		Timeout:   30 * time.Second,
+	}
+
+	// 将自定义客户端绑定到 context
+	ctx := context.WithValue(context.Background(), oauth2.HTTPClient, debugClient)
 
 	// 1. 验证 state 参数，确保请求是由我们自己发起的，防止 CSRF。
 	stateFromCookie, err := r.Cookie("oauth-state")
@@ -140,6 +158,7 @@ func handleCallback(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "State cookie 丢失", http.StatusBadRequest)
 		return
 	}
+	// Query(): 解析 URL 中的查询参数
 	if r.URL.Query().Get("state") != stateFromCookie.Value {
 		http.Error(w, "无效的 state 参数", http.StatusBadRequest)
 		return
@@ -147,11 +166,30 @@ func handleCallback(w http.ResponseWriter, r *http.Request) {
 
 	// 2. 从 URL 中获取授权码，并用它来向 Provider 交换令牌。
 	code := r.URL.Query().Get("code")
+
+	// 添加简单的调试信息
+	fmt.Printf("\n🚀 开始令牌交换...\n")
+	fmt.Printf("🔑 授权码: %s\n", code)
+	fmt.Printf("⏰ 时间: %s\n", time.Now().Format("15:04:05"))
+
+	startTime := time.Now()
+
+	// Exchange() 方法会使用授权码与 OIDC Provider 交换访问令牌和 ID Token
 	oauth2Token, err := oauth2Config.Exchange(ctx, code)
+
+	duration := time.Since(startTime)
+	fmt.Printf("⏱️ 请求耗时: %v\n", duration)
+
 	if err != nil {
+		fmt.Printf("❌ 令牌交换失败: %v\n", err)
 		http.Error(w, "交换令牌失败: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
+
+	fmt.Printf("✅ 令牌交换成功!\n")
+	fmt.Printf("🎫 AccessToken 前缀: %s...\n", oauth2Token.AccessToken[:min(20, len(oauth2Token.AccessToken))])
+	fmt.Printf("🏷️ TokenType: %s\n", oauth2Token.TokenType)
+	fmt.Printf("⏰ 过期时间: %s\n", oauth2Token.Expiry.Format("15:04:05"))
 
 	// 3. 从令牌响应中提取 ID Token。
 	rawIDToken, ok := oauth2Token.Extra("id_token").(string)
@@ -196,14 +234,14 @@ func handleCallback(w http.ResponseWriter, r *http.Request) {
 
 // handleLogout 用于清除会话 Cookie，实现退出登录。
 func handleLogout(w http.ResponseWriter, r *http.Request) {
-    http.SetCookie(w, &http.Cookie{
-        Name:     "user-info",
-        Value:    "",
-        Path:     "/",
-        Expires:  time.Unix(0, 0), // 设置为过去的某个时间点，使 Cookie立即失效
-        HttpOnly: true,
-    })
-    http.Redirect(w, r, "/", http.StatusFound)
+	http.SetCookie(w, &http.Cookie{
+		Name:     "user-info",
+		Value:    "",
+		Path:     "/",
+		Expires:  time.Unix(0, 0), // 设置为过去的某个时间点，使 Cookie立即失效
+		HttpOnly: true,
+	})
+	http.Redirect(w, r, "/", http.StatusFound)
 }
 
 // generateRandomString 是一个生成随机字符串的工具函数。
@@ -214,4 +252,12 @@ func generateRandomString(length int) (string, error) {
 		return "", err
 	}
 	return base64.URLEncoding.EncodeToString(b), nil
+}
+
+// min 返回两个整数中的较小值
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }

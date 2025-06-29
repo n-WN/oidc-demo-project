@@ -1,7 +1,40 @@
 # OIDC Client Demo - Relying Party Application
 
 ## Overview
-This is a demonstration client application (Relying Party) that integrates with the OIDC Provider to showcase how modern web applications implement authentication using OpenID Connect. It demonstrates the complete user authentication flow from the client perspective.
+This is a demonstration client application (Relying Party) that integrates with the OIDC Provider to showcase how modern web applications implement authentication using OpenID Connect. The project features a modular architecture with advanced debugging and decoding capabilities.
+
+## 🏗️ Modular Architecture
+
+### File Structure
+```
+oidc-client-demo/
+├── main.go      # Core OIDC client logic and HTTP handlers
+├── debug.go     # HTTP request/response debugging transport
+├── decoder.go   # Smart data format decoder module
+├── go.mod       # Go module dependencies
+├── README.md    # This file
+└── README_zh.md # Chinese documentation
+```
+
+### Module Responsibilities
+
+#### `main.go` - Core Logic
+- OIDC authentication flow
+- HTTP route handlers
+- Session management
+- State validation
+
+#### `debug.go` - Network Debugging
+- HTTP request/response interception
+- Transport-level logging
+- Network timing analysis
+- Integration with decoder module
+
+#### `decoder.go` - Smart Decoding
+- Automatic format detection (JSON, JWT, URL-encoded, Base64)
+- Beautiful output formatting
+- JWT claims explanation
+- Recursive decoding capabilities
 
 ## Core Concepts in Action
 

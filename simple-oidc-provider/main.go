@@ -133,8 +133,10 @@ func handleJWKS(w http.ResponseWriter, r *http.Request) {
 }
 
 // Endpoint 3: Authorization - 用户登录和授权的入口
+// 第一次重定向目的地, 验证客户端 ID 和重定向 URI
+// 触发第二次重定向, 重定向到登录页面
 func handleAuthorize(w http.ResponseWriter, r *http.Request) {
-	q := r.URL.Query()
+	q := r.URL.Query()  // 1. 解析查询参数
 	clientID := q.Get("client_id")
 	redirectURI := q.Get("redirect_uri")
 	
@@ -146,6 +148,7 @@ func handleAuthorize(w http.ResponseWriter, r *http.Request) {
 
 	// 重定向到登录页面，并将所有原始查询参数（如 state, scope 等）都传递过去
 	loginURL := fmt.Sprintf("/login?%s", r.URL.RawQuery)
+	fmt.Printf("重定向用户到登录页面 %s\n", loginURL)
 	http.Redirect(w, r, loginURL, http.StatusFound)
 }
 
@@ -228,6 +231,7 @@ func handleToken(w http.ResponseWriter, r *http.Request) {
 func handleLoginPage(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodGet {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		// GET 请求的参数保持在表单的 action 中
 		fmt.Fprintf(w, `
 			<h2>认证服务登录</h2>
 			<form method="post" action="/login?%s">
@@ -240,7 +244,7 @@ func handleLoginPage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 处理登录逻辑
-	r.ParseForm()
+	r.ParseForm()  // 解析表单数据
 	username := r.PostForm.Get("username")
 	password := r.PostForm.Get("password")
 	
@@ -252,6 +256,7 @@ func handleLoginPage(w http.ResponseWriter, r *http.Request) {
 
 	// 登录成功，重定向到同意页面
 	consentURL := fmt.Sprintf("/consent?%s", r.URL.RawQuery)
+	fmt.Printf("用户 %s 登录成功，重定向到同意授权页面 %s\n", username, consentURL)
 	http.Redirect(w, r, consentURL, http.StatusFound)
 }
 
@@ -276,16 +281,20 @@ func handleConsentPage(w http.ResponseWriter, r *http.Request) {
 	r.ParseForm()
 	if r.FormValue("action") == "同意授权" {
 		code := "code-" + fmt.Sprintf("%d", time.Now().UnixNano()) // 简单生成 code
+		// go 中的 map 并非线程安全的，使用互斥锁来保护
+		// 可用 sync.Map 替代
 		mu.Lock()
 		authCodes[code] = AuthCodeData{
 			ClientID: q.Get("client_id"),
 			UserID:   "demo", // 简化：总是 demo 用户
+			// Expiry: 有效期设置为 5 分钟
 			Expiry:   time.Now().Add(5 * time.Minute),
 		}
 		mu.Unlock()
 
 		// 重定向回客户端应用的回调地址，并带上 code 和 state
 		redirectURI := fmt.Sprintf("%s?code=%s&state=%s", q.Get("redirect_uri"), code, q.Get("state"))
+		fmt.Printf("用户同意授权，重定向到客户端应用: %s\n", redirectURI)
 		http.Redirect(w, r, redirectURI, http.StatusFound)
 	} else {
 		http.Error(w, "用户拒绝授权", http.StatusForbidden)
