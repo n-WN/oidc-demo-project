@@ -152,6 +152,56 @@ This is a **demonstration project**. For production use:
 - Add comprehensive logging and audit trails
 - Use proper secret management
 
+### Advanced Go Concepts: Context in HTTP Debugging
+
+This project demonstrates sophisticated usage of Go's `context` package for HTTP debugging and dependency injection:
+
+#### Context Fundamentals
+```go
+type Context interface {
+    Deadline() (deadline time.Time, ok bool)
+    Done() <-chan struct{}
+    Err() error
+    Value(key interface{}) interface{}
+}
+```
+
+#### HTTP Client Injection via Context
+The project shows how OAuth2 libraries accept custom HTTP clients through context:
+
+```go
+// Custom HTTP client with debugging transport
+client := &http.Client{
+    Transport: NewDebugTransport(),
+}
+
+// Inject client via context
+ctx := context.WithValue(context.Background(), oauth2.HTTPClient, client)
+
+// OAuth2 library will use our custom client
+token, err := oauth2Config.Exchange(ctx, code)
+```
+
+#### Key Benefits in HTTP Debugging
+
+1. **Non-intrusive Debugging**: Add HTTP tracing without modifying core business logic
+2. **Dependency Injection**: Pass custom HTTP clients, timeouts, or configuration through context
+3. **Request Correlation**: Track requests across multiple service calls
+4. **Graceful Cancellation**: Handle timeouts and user cancellations properly
+
+#### Practical Implementation
+The `debug.go` module demonstrates:
+- Custom `http.RoundTripper` implementation
+- Request/response logging with proper formatting
+- Integration with Go's `httptrace` package for network-level debugging
+- Context-aware HTTP client configuration
+
+#### Best Practices
+- Use typed context keys to avoid collisions
+- Always handle context cancellation in long-running operations
+- Keep context values immutable and lightweight
+- Use context for request-scoped data, not application configuration
+
 ### Educational Value
 
 Perfect for:
@@ -159,6 +209,8 @@ Perfect for:
 - Learning OIDC implementation patterns
 - Grasping OAuth2 vs OIDC differences
 - Seeing SSO in action
+- Mastering Go context patterns for HTTP debugging
+- Learning dependency injection in Go
 - Preparing for real-world integrations with providers like Google, Auth0, or Azure AD
 
 ---
@@ -279,6 +331,56 @@ sequenceDiagram
 3. **JWT 安全**：令牌创建、签名和验证
 4. **SSO 实现**：单点登录在实践中的工作原理
 5. **真实集成**：生产就绪的模式和安全性
+
+### 高级 Go 概念：Context 在 HTTP 调试中的应用
+
+本项目演示了 Go `context` 包在 HTTP 调试和依赖注入中的高级用法：
+
+#### Context 基础原理
+```go
+type Context interface {
+    Deadline() (deadline time.Time, ok bool)  // 超时时间
+    Done() <-chan struct{}                    // 取消信号
+    Err() error                               // 错误信息
+    Value(key interface{}) interface{}        // 键值存储
+}
+```
+
+#### 通过 Context 注入 HTTP 客户端
+项目展示了 OAuth2 库如何通过 context 接受自定义 HTTP 客户端：
+
+```go
+// 带调试传输层的自定义 HTTP 客户端
+client := &http.Client{
+    Transport: NewDebugTransport(),
+}
+
+// 通过 context 注入客户端
+ctx := context.WithValue(context.Background(), oauth2.HTTPClient, client)
+
+// OAuth2 库将使用我们的自定义客户端
+token, err := oauth2Config.Exchange(ctx, code)
+```
+
+#### HTTP 调试的关键优势
+
+1. **无侵入式调试**：无需修改核心业务逻辑即可添加 HTTP 追踪
+2. **依赖注入**：通过 context 传递自定义 HTTP 客户端、超时或配置
+3. **请求关联**：跨多个服务调用追踪请求
+4. **优雅取消**：正确处理超时和用户取消操作
+
+#### 实际实现
+`debug.go` 模块演示了：
+- 自定义 `http.RoundTripper` 实现
+- 带格式化的请求/响应日志记录
+- 与 Go `httptrace` 包集成进行网络级调试
+- 上下文感知的 HTTP 客户端配置
+
+#### 最佳实践
+- 使用类型化的 context 键避免冲突
+- 在长时间运行的操作中始终处理 context 取消
+- 保持 context 值不可变且轻量级
+- 将 context 用于请求范围的数据，而非应用程序配置
 
 ### 组件说明
 

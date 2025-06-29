@@ -163,6 +163,60 @@ oidcConfig := OIDCConfig{
 - **Protected Page**: User profile information from ID Token
 - **Session Management**: Persistent login across page refreshes
 
+## Advanced Go Programming Concepts
+
+### Context in HTTP Debugging
+
+This client demonstrates sophisticated Go programming patterns using the `context` package for HTTP debugging and dependency injection:
+
+#### How Context Powers OAuth2 Debugging
+
+The project showcases how OAuth2 libraries accept custom HTTP clients through context:
+
+```go
+// Create debugging HTTP client
+client := &http.Client{
+    Transport: NewDebugTransport(),
+}
+
+// Inject via context - this is dependency injection in Go!
+ctx := context.WithValue(context.Background(), oauth2.HTTPClient, client)
+
+// OAuth2 library automatically uses our debug client
+token, err := oauth2Config.Exchange(ctx, code)
+```
+
+#### Key Benefits
+
+1. **Non-intrusive Debugging**: Add HTTP tracing without changing core logic
+2. **Request Correlation**: Track requests across function calls
+3. **Flexible Configuration**: Pass timeouts, clients, or custom headers
+4. **Production-Ready**: Easy to enable/disable debugging
+
+#### Modular Design
+
+- **`debug.go`**: Custom HTTP transport with request/response logging
+- **`decoder.go`**: Smart data format detection and pretty-printing
+- **`main.go`**: Clean business logic that uses debugging components
+
+### HTTP Request Tracing
+
+The debug module provides detailed insights into OAuth2 network traffic:
+
+```go
+// See exactly what OAuth2 library sends
+POST /token HTTP/1.1
+Content-Type: application/x-www-form-urlencoded
+
+client_id=demo-client&code=abc123&grant_type=authorization_code...
+
+// And exactly what it receives  
+HTTP/1.1 200 OK
+Content-Type: application/json
+
+{"access_token":"...", "id_token":"...", "token_type":"Bearer"}
+```
+
 ## Educational Features
 
 ### 1. Real OIDC Implementation

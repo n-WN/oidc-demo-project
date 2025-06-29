@@ -130,6 +130,60 @@ oidcConfig := OIDCConfig{
 - **受保护页面**：来自 ID 令牌的用户配置信息
 - **会话管理**：页面刷新时的持久登录
 
+## 高级 Go 编程概念
+
+### Context 在 HTTP 调试中的应用
+
+本客户端演示了使用 Go `context` 包进行 HTTP 调试和依赖注入的高级编程模式：
+
+#### Context 如何驱动 OAuth2 调试
+
+项目展示了 OAuth2 库如何通过 context 接受自定义 HTTP 客户端：
+
+```go
+// 创建调试 HTTP 客户端
+client := &http.Client{
+    Transport: NewDebugTransport(),
+}
+
+// 通过 context 注入 - 这就是 Go 中的依赖注入！
+ctx := context.WithValue(context.Background(), oauth2.HTTPClient, client)
+
+// OAuth2 库将自动使用我们的调试客户端
+token, err := oauth2Config.Exchange(ctx, code)
+```
+
+#### 关键优势
+
+1. **无侵入式调试**：无需更改核心逻辑即可添加 HTTP 追踪
+2. **请求关联**：跨函数调用追踪请求
+3. **灵活配置**：传递超时、客户端或自定义头部
+4. **生产就绪**：易于启用/禁用调试功能
+
+#### 模块化设计
+
+- **`debug.go`**：带请求/响应日志记录的自定义 HTTP 传输层
+- **`decoder.go`**：智能数据格式检测和美观打印
+- **`main.go`**：使用调试组件的简洁业务逻辑
+
+### HTTP 请求追踪
+
+调试模块提供对 OAuth2 网络流量的详细洞察：
+
+```go
+// 查看 OAuth2 库发送的确切内容
+POST /token HTTP/1.1
+Content-Type: application/x-www-form-urlencoded
+
+client_id=demo-client&code=abc123&grant_type=authorization_code...
+
+// 以及接收的确切内容
+HTTP/1.1 200 OK
+Content-Type: application/json
+
+{"access_token":"...", "id_token":"...", "token_type":"Bearer"}
+```
+
 ## 教育特性
 
 ### 1. 真实 OIDC 实现
