@@ -182,6 +182,75 @@ ctx := context.WithValue(context.Background(), oauth2.HTTPClient, client)
 token, err := oauth2Config.Exchange(ctx, code)
 ```
 
+#### 🔍 OAuth2 Library Internal Implementation Tracking
+
+By diving deep into the OAuth2 library source code, we discovered the key location where Context flows:
+
+**File Path**: `golang.org/x/oauth2@v0.30.0/internal/transport.go`
+
+```go
+// HTTPClient is the context key to use with context.WithValue
+var HTTPClient ContextKey
+
+// ContextKey ensures key uniqueness and immutability
+type ContextKey struct{}
+
+// 🎯 Key function: Extract HTTP client from context
+func ContextClient(ctx context.Context) *http.Client {
+    if ctx != nil {
+        // ⭐ This is where Context.Value() method is actually called!
+        if hc, ok := ctx.Value(HTTPClient).(*http.Client); ok {
+            return hc  // Return our injected debug client
+        }
+    }
+    return http.DefaultClient  // Fallback to default client
+}
+```
+
+#### 🔄 Complete Context Flow Chain
+
+```mermaid
+sequenceDiagram
+    participant UserCode as Our Code
+    participant Context as Context
+    participant OAuth2 as OAuth2.Exchange()
+    participant Transport as transport.ContextClient()
+    participant HTTP as HTTP Request
+    
+    UserCode->>Context: WithValue(ctx, oauth2.HTTPClient, debugClient)
+    UserCode->>OAuth2: oauth2Config.Exchange(ctx, code)
+    OAuth2->>Transport: ContextClient(ctx)
+    Transport->>Context: ctx.Value(HTTPClient)
+    Context->>Transport: return debugClient
+    Transport->>OAuth2: return debugClient
+    OAuth2->>HTTP: use debugClient for request
+    HTTP->>UserCode: trigger our debug functionality
+```
+
+#### 💡 Key Design Analysis
+
+1. **ContextKey's Clever Design**:
+   ```go
+   type ContextKey struct{}
+   ```
+   - **Uniqueness**: Only OAuth2 library can create this type
+   - **Immutability**: External packages cannot modify the key
+   - **Memory Efficiency**: Empty struct uses no memory
+   - **Type Safety**: Avoids string key collisions
+
+2. **Actual Usage of Value() Method**:
+   ```go
+   // This is where Context interface's Value() method gets called!
+   if hc, ok := ctx.Value(HTTPClient).(*http.Client); ok {
+       return hc
+   }
+   ```
+
+3. **Graceful Fallback Mechanism**:
+   - If custom client found → Use debug functionality
+   - If not found → Use default client
+   - Ensures backward compatibility
+
 #### Key Benefits in HTTP Debugging
 
 1. **Non-intrusive Debugging**: Add HTTP tracing without modifying core business logic

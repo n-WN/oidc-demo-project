@@ -38,10 +38,10 @@ func (d *debugTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 		bodyBytes, err := io.ReadAll(req.Body)
 		if err == nil {
 			fmt.Printf("请求体: %s\n", string(bodyBytes))
-			
+
 			// 智能解码和格式化
 			d.Decoder.SmartDecode("请求体", bodyBytes)
-			
+
 			// 重新设置请求体，因为它只能读取一次
 			req.Body = io.NopCloser(strings.NewReader(string(bodyBytes)))
 		}
@@ -67,10 +67,10 @@ func (d *debugTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 		bodyBytes, err := io.ReadAll(resp.Body)
 		if err == nil {
 			fmt.Printf("响应体: %s\n", string(bodyBytes))
-			
+
 			// 智能解码和格式化
 			d.Decoder.SmartDecode("响应体", bodyBytes)
-			
+
 			// 重新设置响应体
 			resp.Body = io.NopCloser(strings.NewReader(string(bodyBytes)))
 		}

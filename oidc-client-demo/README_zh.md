@@ -138,20 +138,172 @@ oidcConfig := OIDCConfig{
 
 #### Context 如何驱动 OAuth2 调试
 
-项目展示了 OAuth2 库如何通过 context 接受自定义 HTTP 客户端：
+项目展示了 `WithValue()` 和 `Value()` 的完整配合过程：
 
 ```go
-// 创建调试 HTTP 客户端
-client := &http.Client{
-    Transport: NewDebugTransport(),
-}
-
-// 通过 context 注入 - 这就是 Go 中的依赖注入！
+// 1. 我们使用 WithValue() "写入"调试客户端
+client := &http.Client{Transport: NewDebugTransport()}
 ctx := context.WithValue(context.Background(), oauth2.HTTPClient, client)
 
-// OAuth2 库将自动使用我们的调试客户端
+// 2. OAuth2 库内部使用 Value() "读取"我们的客户端
+func (c *Config) Exchange(ctx context.Context, code string) (*Token, error) {
+    // OAuth2 库调用 ctx.Value() 获取我们注入的客户端
+    if client, ok := ctx.Value(oauth2.HTTPClient).(*http.Client); ok {
+        // ✅ 找到了！使用我们的调试客户端
+        return c.exchangeWithClient(client, code)
+    } else {
+        // ❌ 没找到，使用默认客户端
+        return c.exchangeWithClient(http.DefaultClient, code)
+    }
+}
+
+// 3. 最终我们的调试功能被触发
 token, err := oauth2Config.Exchange(ctx, code)
 ```
+
+#### WithValue() vs Value() 的分工
+
+- **`WithValue()`**: 我们的代码使用，用于"注入"依赖
+- **`Value()`**: 库代码使用，用于"提取"依赖
+
+#### Context 接口的四个方法回顾
+
+```go
+type Context interface {
+    Deadline() (deadline time.Time, ok bool)  // 超时控制
+    Done() <-chan struct{}                    // 取消信号
+    Err() error                               // 错误信息
+    Value(key any) any                        // 键值存储 ⭐
+}
+```
+
+**我们重点使用的是 `Value()` 方法进行依赖注入！**
+
+#### 完整的读写过程
+
+```go
+// 第一步：我们使用 context.WithValue() 创建新的 context
+ctx := context.WithValue(context.Background(), oauth2.HTTPClient, debugClient)
+
+// 第二步：OAuth2 库内部调用 Context.Value() 方法读取
+func (c *Config) Exchange(ctx context.Context, code string) (*Token, error) {
+    // 这里调用的是 Context 接口的 Value() 方法
+    if client := ctx.Value(oauth2.HTTPClient); client != nil {
+        httpClient := client.(*http.Client)
+        // 使用我们注入的调试客户端
+    }
+}
+```
+
+#### 🔍 OAuth2 库内部实现追踪
+
+通过深入追踪 OAuth2 库的源码，我们发现了 Context 流转的关键代码位置：
+
+**文件路径**: `golang.org/x/oauth2@v0.30.0/internal/transport.go`
+
+```go
+// HTTPClient 是用于 context.WithValue 的键
+var HTTPClient ContextKey
+
+// ContextKey 是空结构体，确保键的唯一性和不可变性
+type ContextKey struct{}
+
+// 🎯 关键函数：从 context 中提取 HTTP 客户端
+func ContextClient(ctx context.Context) *http.Client {
+    if ctx != nil {
+        // ⭐ 这里就是 Context.Value() 方法的实际调用！
+        if hc, ok := ctx.Value(HTTPClient).(*http.Client); ok {
+            return hc  // 返回我们注入的调试客户端
+        }
+    }
+    return http.DefaultClient  // 回退到默认客户端
+}
+```
+
+#### 🔄 Context 流转的完整链路
+
+```mermaid
+sequenceDiagram
+    participant UserCode as 我们的代码
+    participant Context as Context
+    participant OAuth2 as OAuth2.Exchange()
+    participant Transport as transport.ContextClient()
+    participant HTTP as HTTP请求
+    
+    UserCode->>Context: WithValue(ctx, oauth2.HTTPClient, debugClient)
+    Note over Context: 创建新的 context 并存储客户端
+    
+    UserCode->>OAuth2: oauth2Config.Exchange(ctx, code)
+    Note over OAuth2: 开始令牌交换流程
+    
+    OAuth2->>Transport: ContextClient(ctx)
+    Note over Transport: 调用内部函数获取客户端
+    
+    Transport->>Context: ctx.Value(HTTPClient)
+    Note over Context: 使用 Value() 方法读取
+    
+    Context->>Transport: 返回 debugClient
+    Note over Transport: 成功获取自定义客户端
+    
+    Transport->>OAuth2: 返回 debugClient
+    OAuth2->>HTTP: 使用 debugClient 发起请求
+    Note over HTTP: 触发我们的调试功能
+    
+    HTTP->>UserCode: 显示调试信息
+```
+
+#### 💡 关键设计分析
+
+1. **ContextKey 的巧妙设计**:
+   ```go
+   type ContextKey struct{}
+   ```
+   - **唯一性**: 只有 OAuth2 库能创建这个类型
+   - **不可变**: 外部包无法修改键值
+   - **内存效率**: 空结构体不占用内存
+   - **类型安全**: 避免字符串键冲突
+
+2. **Value() 方法的实际应用**:
+   ```go
+   // 这是 Context 接口的 Value() 方法被调用的地方！
+   if hc, ok := ctx.Value(HTTPClient).(*http.Client); ok {
+       return hc
+   }
+   ```
+
+3. **优雅的回退机制**:
+   - 如果找到自定义客户端 → 使用调试功能
+   - 如果没有找到 → 使用默认客户端
+   - 保证了向后兼容性
+
+#### 🔍 实际代码验证
+
+我们可以通过以下方式验证这个流程：
+
+```go
+// 在我们的 debug.go 中添加追踪信息
+func (d *debugTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+    fmt.Println("🎯 成功！OAuth2 库使用了我们的调试客户端")
+    fmt.Printf("🔍 请求详情: %s %s\n", req.Method, req.URL)
+    
+    // 这证明了 Context 依赖注入成功工作！
+    // ...existing code...
+}
+```
+
+#### 为什么这样设计？
+
+1. **分离关注点**: 
+   - `WithValue()` 负责创建新 context（不可变性）
+   - `Value()` 负责读取值（接口一致性）
+
+2. **类型安全**: 
+   - 编译时检查键值类型
+   - 运行时类型断言
+
+3. **不可变性**: 
+   - 每次 `WithValue()` 都创建新 context
+   - 原 context 保持不变
 
 #### 关键优势
 
