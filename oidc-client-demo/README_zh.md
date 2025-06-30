@@ -130,193 +130,123 @@ oidcConfig := OIDCConfig{
 - **受保护页面**：来自 ID 令牌的用户配置信息
 - **会话管理**：页面刷新时的持久登录
 
-## 高级 Go 编程概念
+## 高级 Go 编程概念：深入理解 Context 与 HTTP 调试
 
-### Context 在 HTTP 调试中的应用
+本客户端演示了 Go 语言中一个非常强大且优雅的编程模式：**通过 `context.Context` 实现依赖注入，从而对标准库或第三方库（如 `golang.org/x/oauth2`）进行无侵入式的行为扩展**。我们利用此模式实现了一个强大的 HTTP 流量调试器。
 
-本客户端演示了使用 Go `context` 包进行 HTTP 调试和依赖注入的高级编程模式：
+下面，我们将深入剖析这一机制的工作原理。
 
-#### Context 如何驱动 OAuth2 调试
+### 核心协同原理：依赖注入的“契约”与装饰器模式的“执行”
 
-项目展示了 `WithValue()` 和 `Value()` 的完整配合过程：
+整个调试功能可以理解为两个核心步骤的协同工作：
 
-```go
-// 1. 我们使用 WithValue() "写入"调试客户端
-client := &http.Client{Transport: NewDebugTransport()}
-ctx := context.WithValue(context.Background(), oauth2.HTTPClient, client)
+1.  **“契约” (依赖注入)**：我们的代码与 `oauth2` 库之间有一个隐式约定。我们通过 `context` 将一个自定义的 `*http.Client` “注入”到 `oauth2` 库的执行流程中。
+2.  **“执行” (装饰器模式)**：我们提供的自定义 `*http.Client` 使用了一个特殊的 `http.RoundTripper` (`debugTransport`)，它像一个装饰器，包装了 Go 默认的 HTTP transport。它在不改变原始网络行为的情况下，增加了日志记录功能。
 
-// 2. OAuth2 库内部使用 Value() "读取"我们的客户端
-func (c *Config) Exchange(ctx context.Context, code string) (*Token, error) {
-    // OAuth2 库调用 ctx.Value() 获取我们注入的客户端
-    if client, ok := ctx.Value(oauth2.HTTPClient).(*http.Client); ok {
-        // ✅ 找到了！使用我们的调试客户端
-        return c.exchangeWithClient(client, code)
-    } else {
-        // ❌ 没找到，使用默认客户端
-        return c.exchangeWithClient(http.DefaultClient, code)
+### 步骤 1：“契约” - 如何通过 Context 注入 HTTP 客户端
+
+`golang.org/x/oauth2` 库的设计者允许调用者覆盖其内部使用的默认 `http.Client`。他们选择的机制正是 `context.Context`。
+
+1.  **预定义的“钥匙”**：`oauth2` 库提供了一个公共变量 `oauth2.HTTPClient`。它本质上是一个用作 `context` 键的唯一标识符。
+
+2.  **传递“信物”**：在调用 `Exchange` 函数之前，我们创建一个配置了自定义 `Transport` 的 `http.Client`，并使用 `context.WithValue` 将其存入 `context` 中。这相当于告诉 `oauth2` 库：“处理这个请求时，请用我提供的这个客户端”。
+
+    ```go
+    // 在 main.go 中:
+    // 1. 创建一个使用我们 debugTransport 的 http.Client
+    debugClient := &http.Client{
+        Transport: NewDebugTransport(), // NewDebugTransport 来自 debug.go
     }
-}
 
-// 3. 最终我们的调试功能被触发
-token, err := oauth2Config.Exchange(ctx, code)
-```
+    // 2. 使用 oauth2.HTTPClient 作为“钥匙”，将客户端存入 context
+    ctx := context.WithValue(context.Background(), oauth2.HTTPClient, debugClient)
 
-#### WithValue() vs Value() 的分工
+    // 3. 将这个带有“信物”的 context 传递给 Exchange
+    token, err := oauth2Config.Exchange(ctx, code)
+    ```
 
-- **`WithValue()`**: 我们的代码使用，用于"注入"依赖
-- **`Value()`**: 库代码使用，用于"提取"依赖
+3.  **`Exchange` 内部的检查**：当 `oauth2.Exchange` 执行时，它会使用这个“钥匙”在 `context` 中查找。其内部逻辑（已在 `golang.org/x/oauth2/internal/transport.go` 中证实）大致如下：
 
-#### Context 接口的四个方法回顾
-
-```go
-type Context interface {
-    Deadline() (deadline time.Time, ok bool)  // 超时控制
-    Done() <-chan struct{}                    // 取消信号
-    Err() error                               // 错误信息
-    Value(key any) any                        // 键值存储 ⭐
-}
-```
-
-**我们重点使用的是 `Value()` 方法进行依赖注入！**
-
-#### 完整的读写过程
-
-```go
-// 第一步：我们使用 context.WithValue() 创建新的 context
-ctx := context.WithValue(context.Background(), oauth2.HTTPClient, debugClient)
-
-// 第二步：OAuth2 库内部调用 Context.Value() 方法读取
-func (c *Config) Exchange(ctx context.Context, code string) (*Token, error) {
-    // 这里调用的是 Context 接口的 Value() 方法
-    if client := ctx.Value(oauth2.HTTPClient); client != nil {
-        httpClient := client.(*http.Client)
-        // 使用我们注入的调试客户端
-    }
-}
-```
-
-#### 🔍 OAuth2 库内部实现追踪
-
-通过深入追踪 OAuth2 库的源码，我们发现了 Context 流转的关键代码位置：
-
-**文件路径**: `golang.org/x/oauth2@v0.30.0/internal/transport.go`
-
-```go
-// HTTPClient 是用于 context.WithValue 的键
-var HTTPClient ContextKey
-
-// ContextKey 是空结构体，确保键的唯一性和不可变性
-type ContextKey struct{}
-
-// 🎯 关键函数：从 context 中提取 HTTP 客户端
-func ContextClient(ctx context.Context) *http.Client {
-    if ctx != nil {
-        // ⭐ 这里就是 Context.Value() 方法的实际调用！
-        if hc, ok := ctx.Value(HTTPClient).(*http.Client); ok {
-            return hc  // 返回我们注入的调试客户端
+    ```go
+    // oauth2 库内部简化逻辑
+    func ContextClient(ctx context.Context) *http.Client {
+        if ctx != nil {
+            // 使用“钥匙”在 context 中查找，如果找到且类型正确，就返回我们注入的客户端
+            if hc, ok := ctx.Value(oauth2.HTTPClient).(*http.Client); ok {
+                return hc
+            }
         }
+        // 否则，返回 Go 默认的客户端
+        return http.DefaultClient
     }
-    return http.DefaultClient  // 回退到默认客户端
-}
-```
+    ```
 
-#### 🔄 Context 流转的完整链路
+通过这种方式，`context` 充当了依赖注入的通用管道，实现了控制反转（IoC），让库的行为可以被外部代码优雅地定制。
+
+### 步骤 2：“执行” - `debugTransport` 如何拦截和记录流量
+
+现在 `oauth2` 库拿到了我们提供的 `http.Client`，`debug.go` 中的 `debugTransport` 开始发挥作用。
+
+1.  **`http.RoundTripper` 接口**：`http.Client` 将实际的网络请求委托给其 `Transport` 字段，该字段必须实现 `http.RoundTripper` 接口。此接口的核心是 `RoundTrip` 方法，它负责完成一次完整的 HTTP “往返”。
+
+2.  **装饰器模式**：`debugTransport` 正是一个 `RoundTripper` 的实现。它内部持有了另一个 `RoundTripper`（即 `http.DefaultTransport`），形成了一个装饰链。
+
+3.  **`RoundTrip` 的执行流程**：当我们的 `debugClient` 发送请求时，`debugTransport.RoundTrip` 方法被调用，其内部流程如下：
+    a.  **拦截请求**：方法首先接收到即将发出的 `*http.Request`。
+    b.  **记录请求**：打印请求的方法、URL、头部等信息。
+    c.  **读取并重建请求体**：由于 `req.Body` 是一个只能读取一次的 `io.Reader`，我们必须先用 `io.ReadAll` 读取其内容进行打印，然后**重新创建一个新的 `io.Reader`** 并放回 `req.Body`，否则后续的网络调用将收不到任何数据。
+    d.  **委托执行**：调用被包装的 `d.Transport.RoundTrip(req)`，将请求交给原始的 `Transport` 去完成实际的网络通信。
+    e.  **拦截响应**：从底层 `Transport` 获得 `*http.Response`。
+    f.  **记录响应**：打印响应的状态码、头部等信息。
+    g.  **读取并重建响应体**：同理，读取并打印响应体后，必须重建 `resp.Body`，以确保调用 `Exchange` 的代码能正确解析令牌。
+    h.  **返回响应**：将最终的响应返回给调用者。
+
+### 完整协同流程
+
+下面的序列图清晰地展示了整个协同过程：
 
 ```mermaid
 sequenceDiagram
-    participant UserCode as 我们的代码
-    participant Context as Context
-    participant OAuth2 as OAuth2.Exchange()
-    participant Transport as transport.ContextClient()
-    participant HTTP as HTTP请求
+    participant UserCode as 您的代码
+    participant Context as context.Context
+    participant OAuth2Lib as oauth2.Exchange()
+    participant YourClient as 您的 http.Client
+    participant DebugTransport as debugTransport
+    participant DefaultTransport as http.DefaultTransport
+
+    UserCode->>DebugTransport: NewDebugTransport()
+    UserCode->>YourClient: client := &http.Client{Transport: debugTransport}
+    UserCode->>Context: ctx := context.WithValue(..., oauth2.HTTPClient, client)
+    Note over Context: “注入”自定义客户端
     
-    UserCode->>Context: WithValue(ctx, oauth2.HTTPClient, debugClient)
-    Note over Context: 创建新的 context 并存储客户端
+    UserCode->>OAuth2Lib: Exchange(ctx, code)
     
-    UserCode->>OAuth2: oauth2Config.Exchange(ctx, code)
-    Note over OAuth2: 开始令牌交换流程
+    OAuth2Lib->>Context: ctx.Value(oauth2.HTTPClient)
+    Note over OAuth2Lib: “提取”客户端
+    Context-->>OAuth2Lib: 返回您的 http.Client
     
-    OAuth2->>Transport: ContextClient(ctx)
-    Note over Transport: 调用内部函数获取客户端
+    OAuth2Lib->>YourClient: .Post(...)
+    YourClient->>DebugTransport: .RoundTrip(req)
     
-    Transport->>Context: ctx.Value(HTTPClient)
-    Note over Context: 使用 Value() 方法读取
+    Note over DebugTransport: 1. 打印请求, 重建请求体
     
-    Context->>Transport: 返回 debugClient
-    Note over Transport: 成功获取自定义客户端
+    DebugTransport->>DefaultTransport: .RoundTrip(req)
+    Note over DefaultTransport: 实际网络通信
+    DefaultTransport-->>DebugTransport: 返回 resp, err
     
-    Transport->>OAuth2: 返回 debugClient
-    OAuth2->>HTTP: 使用 debugClient 发起请求
-    Note over HTTP: 触发我们的调试功能
+    Note over DebugTransport: 2. 打印响应, 重建响应体
     
-    HTTP->>UserCode: 显示调试信息
+    DebugTransport-->>YourClient: 返回 resp, err
+    YourClient-->>OAuth2Lib: 返回 resp, err
+    OAuth2Lib-->>UserCode: 返回 token, err
 ```
 
-#### 💡 关键设计分析
+### 关键优势总结
 
-1. **ContextKey 的巧妙设计**:
-   ```go
-   type ContextKey struct{}
-   ```
-   - **唯一性**: 只有 OAuth2 库能创建这个类型
-   - **不可变**: 外部包无法修改键值
-   - **内存效率**: 空结构体不占用内存
-   - **类型安全**: 避免字符串键冲突
-
-2. **Value() 方法的实际应用**:
-   ```go
-   // 这是 Context 接口的 Value() 方法被调用的地方！
-   if hc, ok := ctx.Value(HTTPClient).(*http.Client); ok {
-       return hc
-   }
-   ```
-
-3. **优雅的回退机制**:
-   - 如果找到自定义客户端 → 使用调试功能
-   - 如果没有找到 → 使用默认客户端
-   - 保证了向后兼容性
-
-#### 🔍 实际代码验证
-
-我们可以通过以下方式验证这个流程：
-
-```go
-// 在我们的 debug.go 中添加追踪信息
-func (d *debugTransport) RoundTrip(req *http.Request) (*http.Response, error) {
-    fmt.Println("🎯 成功！OAuth2 库使用了我们的调试客户端")
-    fmt.Printf("🔍 请求详情: %s %s\n", req.Method, req.URL)
-    
-    // 这证明了 Context 依赖注入成功工作！
-    // ...existing code...
-}
-```
-
-#### 为什么这样设计？
-
-1. **分离关注点**: 
-   - `WithValue()` 负责创建新 context（不可变性）
-   - `Value()` 负责读取值（接口一致性）
-
-2. **类型安全**: 
-   - 编译时检查键值类型
-   - 运行时类型断言
-
-3. **不可变性**: 
-   - 每次 `WithValue()` 都创建新 context
-   - 原 context 保持不变
-
-#### 关键优势
-
-1. **无侵入式调试**：无需更改核心逻辑即可添加 HTTP 追踪
-2. **请求关联**：跨函数调用追踪请求
-3. **灵活配置**：传递超时、客户端或自定义头部
-4. **生产就绪**：易于启用/禁用调试功能
-
-#### 模块化设计
-
-- **`debug.go`**：带请求/响应日志记录的自定义 HTTP 传输层
-- **`decoder.go`**：智能数据格式检测和美观打印
-- **`main.go`**：使用调试组件的简洁业务逻辑
+-   **无侵入式调试**：无需修改 `oauth2` 库的任何代码，即可实现对其网络行为的完全监控。
+-   **关注点分离**：业务逻辑（在 `main.go`）与调试逻辑（在 `debug.go`）完全解耦。
+-   **高度灵活**：这种模式不仅可用于调试，还可用于实现自定义重试、请求签名、缓存等高级功能。
+-   **生产就绪**：可以轻松地通过配置或编译标签来启用或禁用此调试功能。
 
 ### HTTP 请求追踪
 
